@@ -58,7 +58,7 @@ def print_vals(key, vals):
 		print (v)
 
 
-def get_similar_questions(question):
+def get_similar_question_ids(question):
 	bigrams, trigrams = get_ngrams(question)
 	similar_questions = get_values(trigrams_map, trigrams)
 	if not similar_questions:
@@ -72,13 +72,15 @@ def get_simplified_sentence(sentence):
 	return ' '.join(words)
 
 
-def rank_questions(question, similar_questions):
+def rank_questions(question, similar_question_ids):
 	ranked_questions = list()
 	question = get_simplified_sentence(question)
-	for sq in similar_questions:
+	similar_questions = [questions_map[id] for id in similar_question_ids]
+	for i in range(len(similar_questions)):
+		sq = similar_questions[i]
 		similarity = SequenceMatcher(None, question, get_simplified_sentence(sq)).ratio()
 		if similarity >= SIMILAR_QUESTION_THRES:
-			ranked_questions.append([similarity, sq])
+			ranked_questions.append([similarity, similar_question_ids[i], sq])
 	ranked_questions.sort(key = lambda x: x[0], reverse = True)
 	return ranked_questions
 
@@ -147,23 +149,15 @@ def test(data_file):
 				question, qid = line[:split_index], int(line[split_index + 1: ])
 			except:
 				continue
-			similar_question_ids = map(str, list(get_similar_questions(question)))
+			similar_question_ids = [str(i) for i in get_similar_question_ids(question)]
 
 			#TODO uncomment
-			#similar_questions = list(get_similar_questions(line))
+			#similar_questions = list(get_similar_question_ids(line))
 			if similar_question_ids:
-				similar_questions = [questions_map[id] for id in similar_question_ids]
-				ranked_questions = rank_questions(line, similar_questions)
+				ranked_questions = rank_questions(line, similar_question_ids)
 				print_vals(line, ranked_questions)
-				#TODO remove
-				"""
-				if len(similar_question_ids) > 1:
-					print ("Duplicates for", qid, question)
-					for id in similar_question_ids:
-						if id != qid:
-							print ("Duplicate", id, questions_map[id])
-					print ("----Duplicate---" * 4)
-				"""
+				if len(ranked_questions) > 1:
+					print ("Duplicates", qid, [rq[1] for rq in ranked_questions if rq[1] != str(qid)])
 			else:
 				print ("\n\nNo similar questions found for\n", line)
 			print ("Time taken:", (time() - t0) * 1000, "ms")

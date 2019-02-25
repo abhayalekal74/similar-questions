@@ -5,13 +5,13 @@ from time import time
 from nltk.corpus import stopwords
 import json
 from os.path import join
+from heapq import nlargest
 
 SIMILAR_QUESTION_THRES = 0.65
-BIGRAMS_SYNC = "bigrams.map"
-TRIGRAMS_SYNC = "trigrams.map"
+WORDS_SYNC = "words.map"
 QUESTIONS_SYNC = "questions.map"
 
-bigrams_map, trigrams_map, questions_map = None, None, None
+words_map, questions_map = None, None
 
 stopwords = set(stopwords.words('english'))
 
@@ -36,12 +36,12 @@ def get_val(src_map, key):
 
 
 def get_values(src_map, keys):
-	vals = list()
+	vals = dict()
 	if keys:
 		for key in keys:
 			val = get_val(src_map, key)
 			if val:
-				vals += val
+				vals[key] = val	
 	return vals
 
 
@@ -49,7 +49,7 @@ def get_ngrams(question):
 	words = get_important_words(question)
 	bigrams = get_bigrams(words)
 	trigrams = get_trigrams(words)
-	return bigrams, trigrams
+	return words, bigrams, trigrams
 
 
 def print_vals(key, vals):
@@ -58,12 +58,37 @@ def print_vals(key, vals):
 		print (v)
 
 
+def add_count(src, key):
+	try:
+		src[key] += 1
+	except KeyError:
+		src[key] = 1
+
+
+def get_intersection(src, keys, n):
+	qids = list()
+	if keys:
+		qid_lists = list()
+		for key in keys:
+			t0 = time()
+			if n == 2:
+				qid_lists.append(list(set(src[key[0]]) & set(src[key[1]])))
+			elif n == 3:
+				qid_lists.append(list(set(src[key[0]]) & set(src[key[1]]) & set(src[key[2]])))
+		qid_count_map = dict()
+		for qid_list in qid_lists:
+			[add_count(qid_count_map, qid) for qid in qid_list]
+		qids += nlargest(3, qid_count_map, key=qid_count_map.get)
+	return qids
+
+
 def get_similar_question_ids(question):
-	bigrams, trigrams = get_ngrams(question)
-	similar_questions = get_values(trigrams_map, trigrams)
-	if not similar_questions:
-		similar_questions = get_values(bigrams_map, bigrams)
-	return set(similar_questions)
+	unigrams, bigrams, trigrams = get_ngrams(question)
+	unigram_map = get_values(words_map, unigrams)
+	similar_qids = get_intersection(unigram_map, trigrams, 3)
+	if not similar_qids:
+		similar_qids = get_intersection(unigram_map, bigrams, 2)
+	return list(similar_qids)
 
 
 def get_simplified_sentence(sentence):
@@ -82,7 +107,7 @@ def rank_questions(question, similar_question_ids):
 		if similarity >= SIMILAR_QUESTION_THRES:
 			ranked_questions.append([similarity, similar_question_ids[i], sq])
 	ranked_questions.sort(key = lambda x: x[0], reverse = True)
-	return ranked_questions
+	return ranked_questions[:5]
 
 
 def write_to_file(src_dir, sync, src_map):
@@ -97,26 +122,25 @@ def read_from_file(src_dir, sync):
 
 def load_stored_map(src_dir):
 	try:
-		bigrams_map = read_from_file(src_dir, BIGRAMS_SYNC) 
-		trigrams_map = read_from_file(src_dir, TRIGRAMS_SYNC) 
+		words_map = read_from_file(src_dir, WORDS_SYNC) 
 		questions_map = read_from_file(src_dir, QUESTIONS_SYNC) 
 		print ("Maps loaded from src_dir")
 	except FileNotFoundError:
-		return dict(), dict(), dict()
-	return bigrams_map, trigrams_map, questions_map
+		return dict(), dict()
+	return words_map, questions_map
 	
 
 def train(data_file, src_dir):
 	import progressbar
 
-	global bigrams_map, trigrams_map, questions_map
+	global words_map, questions_map
 	progressbar.streams.wrap_stderr()
 
 	print ("Starting training...")
 
-	bigrams_map, trigrams_map, questions_map = load_stored_map(src_dir)
+	words_map, questions_map = load_stored_map(src_dir)
 
-	if not bigrams_map or not trigrams_map or not questions_map:
+	if not words_map or not questions_map:
 		print ("Learning maps..")
 		with open(data_file, 'r') as df:
 			lines = df.readlines()
@@ -124,17 +148,12 @@ def train(data_file, src_dir):
 				line = lines[i]
 				try:
 					split_index = line.rindex(',')
-					question, qid = line[:split_index], int(line[split_index + 1: ])
+					question, qid = line[:split_index], line[split_index + 1: ].strip()
 					questions_map[qid] = question
 				except:
 					continue
-				bigrams, trigrams = get_ngrams(question)		
-				if bigrams:
-					add_to_map(bigrams_map, bigrams, qid)
-				if trigrams:
-					add_to_map(trigrams_map, trigrams, qid)
-			write_to_file(src_dir, BIGRAMS_SYNC, bigrams_map)
-			write_to_file(src_dir, TRIGRAMS_SYNC, trigrams_map)
+				add_to_map(words_map, get_important_words(question), qid)
+			write_to_file(src_dir, WORDS_SYNC, words_map)
 			write_to_file(src_dir, QUESTIONS_SYNC, questions_map)
 	
 
@@ -146,18 +165,20 @@ def test(data_file):
 			#TODO remove before production, because question id will not be present. Using it to find duplicates in existing content
 			try:
 				split_index = line.rindex(',')
-				question, qid = line[:split_index], int(line[split_index + 1: ])
+				question, qid = line[:split_index], line[split_index + 1: ].strip()
 			except:
 				continue
-			similar_question_ids = [str(i) for i in get_similar_question_ids(question)]
+
+			similar_question_ids = get_similar_question_ids(question)
 
 			#TODO uncomment
 			#similar_questions = list(get_similar_question_ids(line))
 			if similar_question_ids:
 				ranked_questions = rank_questions(line, similar_question_ids)
+
 				print_vals(line, ranked_questions)
 				if len(ranked_questions) > 1:
-					print ("Duplicates", qid, [rq[1] for rq in ranked_questions if rq[1] != str(qid)])
+					print ("Duplicates", qid, [rq[1] for rq in ranked_questions if rq[1] != qid])
 			else:
 				print ("\n\nNo similar questions found for\n", line)
 			print ("Time taken:", (time() - t0) * 1000, "ms")
